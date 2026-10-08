@@ -1,0 +1,51 @@
+name: render-video
+
+on:
+  repository_dispatch:
+    types: [render-video]
+  workflow_dispatch:
+    inputs:
+      jobId:
+        description: "ジョブID"
+        required: true
+      timelineFileId:
+        description: "timeline.json のファイルID"
+        required: true
+
+concurrency:
+  group: render-${{ github.event.client_payload.jobId || inputs.jobId }}
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg & Japanese fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk poppler-utils
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: renderer/requirements.txt
+
+      - name: Install Python packages
+        run: pip install -r renderer/requirements.txt
+
+      - name: Render
+        working-directory: renderer
+        env:
+          JOB_ID: ${{ github.event.client_payload.jobId || inputs.jobId }}
+          TIMELINE_FILE_ID: ${{ github.event.client_payload.timelineFileId || inputs.timelineFileId }}
+          GAS_URL: ${{ secrets.GAS_URL }}
+          RENDERER_KEY: ${{ secrets.RENDERER_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          WORK_DIR: ${{ runner.temp }}/work
+        run: python render.py

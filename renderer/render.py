@@ -23,12 +23,15 @@ GAS が作った timeline.json を読み込み、以下を行う。
   FONT_NAME(Noto Sans CJK JP) FONTS_DIR SEGMENT_WORKERS KEEP_WORK=1 POLL_INTERVAL(30)
 """
 import argparse
+import datetime
+import faulthandler
 import json
 import math
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import wave
@@ -40,7 +43,9 @@ import requests
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from googleapiclient.http import MediaFileUpload
+
+faulthandler.enable()  # 万一クラッシュしたときに発生箇所をログに出す
 
 SR = 48000
 FPS = int(os.environ.get("FPS", "30"))
@@ -95,37 +100,59 @@ class Gas:
 # ------------------------------------------------------------
 # Google Drive
 # ------------------------------------------------------------
-def drive_service():
-    creds = Credentials(
-        None,
-        refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=os.environ["GOOGLE_CLIENT_ID"],
-        client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
-        scopes=["https://www.googleapis.com/auth/drive"],
-    )
-    creds.refresh(Request())
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+class DriveAuth:
+    """OAuth 認証情報を 1 つだけ持ち、スレッド間で安全にアクセストークンを配る"""
+
+    def __init__(self):
+        self.creds = Credentials(
+            None,
+            refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"].strip(),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=os.environ["GOOGLE_CLIENT_ID"].strip(),
+            client_secret=os.environ["GOOGLE_CLIENT_SECRET"].strip(),
+            scopes=["https://www.googleapis.com/auth/drive"],
+        )
+        self.lock = threading.Lock()
+        self.token()
+
+    def token(self):
+        with self.lock:
+            exp = self.creds.expiry
+            soon = exp is not None and (exp - datetime.datetime.utcnow()).total_seconds() < 300
+            if not self.creds.valid or soon:
+                self.creds.refresh(Request())
+            return self.creds.token
 
 
-def download(svc, file_id, dest: Path):
+def drive_service(auth: DriveAuth):
+    """アップロード用（メインスレッドのみで使用）"""
+    auth.token()
+    return build("drive", "v3", credentials=auth.creds, cache_discovery=False)
+
+
+def download(auth: DriveAuth, file_id, dest: Path):
+    """requests でストリーミング取得（スレッドセーフ）"""
     if dest.exists() and dest.stat().st_size > 0:
         return dest
     tmp = dest.with_suffix(dest.suffix + ".part")
+    url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true"
+    last = None
     for attempt in range(4):
         try:
-            req = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
-            with open(tmp, "wb") as f:
-                dl = MediaIoBaseDownload(f, req, chunksize=32 * 1024 * 1024)
-                done = False
-                while not done:
-                    _, done = dl.next_chunk()
+            with requests.get(url, headers={"Authorization": "Bearer " + auth.token()}, stream=True, timeout=120) as r:
+                if r.status_code != 200:
+                    raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
             tmp.rename(dest)
             return dest
         except Exception as e:  # noqa: BLE001
+            last = e
             log(f"ダウンロード再試行 {file_id}: {e}")
             time.sleep(3 * (attempt + 1))
-    raise RuntimeError(f"ダウンロード失敗: {file_id}")
+    raise RuntimeError(f"ダウンロード失敗: {file_id}: {last}")
 
 
 def upload(svc, path: Path, name, folder_id, mime):
@@ -410,10 +437,10 @@ def run_job(gas: Gas, job_id, timeline_file_id):
     seg_dir = base / "segments"
     for d in (assets, seg_dir):
         d.mkdir(parents=True, exist_ok=True)
-    svc = drive_service()
+    auth = DriveAuth()
 
     log("timeline.json を取得")
-    tl_path = download(svc, timeline_file_id, base / "timeline.json")
+    tl_path = download(auth, timeline_file_id, base / "timeline.json")
     tl = json.loads(tl_path.read_text(encoding="utf-8"))
     w, h = int(tl.get("width", 1920)), int(tl.get("height", 1080))
     pages = tl["pages"]
@@ -440,8 +467,9 @@ def run_job(gas: Gas, job_id, timeline_file_id):
         jobs.append((seg["fileId"], ext_of(seg.get("name"), ".mp3")))
     cache = {}
     uniq = {fid: ext for fid, ext in jobs}
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        futs = {ex.submit(download, svc_local(), fid, assets / f"{fid}{ext}"): fid for fid, ext in uniq.items()}
+    log(f"素材 {len(uniq)} 件をダウンロード")
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(download, auth, fid, assets / f"{fid}{ext}"): fid for fid, ext in uniq.items()}
         for i, fut in enumerate(as_completed(futs), 1):
             cache[futs[fut]] = fut.result()
             if i % 20 == 0:
@@ -461,6 +489,7 @@ def run_job(gas: Gas, job_id, timeline_file_id):
         images.setdefault(p["index"], cache[p["image"]["fileId"]])
 
     # ---- 音声 ----
+    log("音声トラックを合成")
     gas.progress(job_id, 10, "音声トラックを合成中")
     mix_wav = base / "mix.wav"
     if not mix_wav.exists():
@@ -504,6 +533,7 @@ def run_job(gas: Gas, job_id, timeline_file_id):
 
     # ---- アップロード ----
     gas.progress(job_id, 94, "Google ドライブへアップロード中")
+    svc = drive_service(auth)
     safe_title = "".join(c if c not in '\\/:*?"<>|' else "_" for c in tl.get("title", job_id))
     stamp = time.strftime("%Y%m%d-%H%M")
     file_id = upload(svc, final, f"{safe_title}_{stamp}.mp4", tl["outputFolderId"], "video/mp4")
@@ -514,18 +544,6 @@ def run_job(gas: Gas, job_id, timeline_file_id):
 
     if os.environ.get("KEEP_WORK") != "1":
         shutil.rmtree(base, ignore_errors=True)
-
-
-_thread_svc = {}
-
-
-def svc_local():
-    """スレッドごとに Drive クライアントを分ける（httplib2 はスレッドセーフでないため）"""
-    import threading
-    tid = threading.get_ident()
-    if tid not in _thread_svc:
-        _thread_svc[tid] = drive_service()
-    return _thread_svc[tid]
 
 
 def safe_run(gas, job_id, timeline_file_id):
@@ -548,7 +566,19 @@ def main():
     ap.add_argument("--timeline-file-id", default=os.environ.get("TIMELINE_FILE_ID", ""))
     ap.add_argument("--poll", action="store_true", help="RENDER_MODE=local のジョブを待ち受けて処理し続ける")
     args = ap.parse_args()
+    required = ["GAS_URL", "RENDERER_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"]
+    missing = [k for k in required if not os.environ.get(k, "").strip()]
+    if missing:
+        log("❌ 環境変数（GitHub Secrets）が未設定です: " + ", ".join(missing))
+        if os.environ.get("GAS_URL") and os.environ.get("RENDERER_KEY") and args.job_id:
+            try:
+                Gas().call("renderer.fail", jobId=args.job_id, message="Secrets 未設定: " + ", ".join(missing))
+            except Exception as e:  # noqa: BLE001
+                log(f"失敗通知もできませんでした: {e}")
+        sys.exit(1)
     gas = Gas()
+    if args.job_id:
+        gas.progress(args.job_id, 0, "レンダラー起動")
 
     if args.poll:
         interval = int(os.environ.get("POLL_INTERVAL", "30"))

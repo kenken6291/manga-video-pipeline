@@ -97,6 +97,31 @@ function setup() {
 }
 
 /* ============================================================
+ * 動作診断（GAS エディタから実行）
+ *  - 初回実行時に全スコープの承認ダイアログが出ます
+ *  - 承認後は「デプロイを管理」→ 編集 → バージョン「新バージョン」で再デプロイ
+ * ============================================================ */
+function diagnose() {
+  const out = [];
+  const check = (label, fn) => {
+    try { out.push('✅ ' + label + ' : ' + (fn() || 'OK')); } catch (e) { out.push('❌ ' + label + ' : ' + e.message); }
+  };
+  check('実行ユーザー', () => Session.getEffectiveUser().getEmail());
+  check('スプレッドシート', () => ss_().getName());
+  check('ルートフォルダ', () => DriveApp.getFolderById(prop_('ROOT_FOLDER_ID', '')).getName());
+  check('GEMINI_API_KEY', () => { if (!prop_('GEMINI_API_KEY', '')) throw new Error('未設定'); return '設定済み'; });
+  check('ADMIN_EMAIL', () => { const v = prop_('ADMIN_EMAIL', ''); if (!v) throw new Error('未設定'); return v; });
+  check('メール送信枠', () => '残り ' + MailApp.getRemainingDailyQuota() + ' 通/日');
+  check('外部通信', () => 'HTTP ' + UrlFetchApp.fetch('https://www.google.com', { muteHttpExceptions: true }).getResponseCode());
+  check('トリガー', () => ScriptApp.getProjectTriggers().map(t => t.getHandlerFunction()).join(', ') || 'なし（setup() を実行してください）');
+  check('Slides 拡張サービス', () => typeof Slides !== 'undefined' ? '有効' : (() => { throw new Error('無効（appsscript.json を確認）'); })());
+  check('Web アプリ URL', () => ScriptApp.getService().getUrl() || '未デプロイ');
+  check('API 応答テスト', () => JSON.stringify(dispatch_({ action: 'auth.me' })));
+  Logger.log(out.join('\n'));
+  return out;
+}
+
+/* ============================================================
  * Web API
  * ============================================================ */
 function doPost(e) {

@@ -250,12 +250,27 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 
 async function api(action, data = {}) {
   if (!CONFIG_OK) throw new Error('config.js の GAS_URL が未設定です');
-  const res = await fetch(GAS_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action, token: state.token, ...data }),
-  });
-  const j = await res.json();
+  let j;
+  try {
+    const res = await fetch(GAS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action, token: state.token, ...data }),
+      redirect: 'follow',
+    });
+    const text = await res.text();
+    try {
+      j = JSON.parse(text);
+    } catch (e) {
+      console.error('GAS response:', text.slice(0, 500));
+      throw new Error('サーバーの応答が JSON ではありません。GAS の承認（setup の実行）と再デプロイを確認してください');
+    }
+  } catch (err) {
+    if (err instanceof TypeError) {
+      throw new Error('サーバー（GAS）に接続できませんでした。GAS エディタで diagnose() を実行し、承認後に「新しいバージョン」で再デプロイしてください');
+    }
+    throw err;
+  }
   if (!j.ok) {
     if (/有効期限|ログインしてください/.test(j.error || '')) { setToken(null); showAuth(); }
     throw new Error(j.error || 'エラーが発生しました');

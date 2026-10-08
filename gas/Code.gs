@@ -114,7 +114,13 @@ function diagnose() {
   check('メール送信枠', () => '残り ' + MailApp.getRemainingDailyQuota() + ' 通/日');
   check('外部通信', () => 'HTTP ' + UrlFetchApp.fetch('https://www.google.com', { muteHttpExceptions: true }).getResponseCode());
   check('トリガー', () => ScriptApp.getProjectTriggers().map(t => t.getHandlerFunction()).join(', ') || 'なし（setup() を実行してください）');
-  check('Slides 拡張サービス', () => typeof Slides !== 'undefined' ? '有効' : (() => { throw new Error('無効（appsscript.json を確認）'); })());
+  check('GAS ファイル構成', () => {
+    const need = { 'Auth.gs': typeof a_register_, 'Jobs.gs': typeof j_create_ };
+    const missing = Object.keys(need).filter(k => need[k] !== 'function');
+    if (missing.length) throw new Error(missing.join(', ') + ' がプロジェクトにありません');
+    return 'Code.gs / Auth.gs / Jobs.gs';
+  });
+  check('Slides 拡張サービス', () => typeof Slides !== 'undefined' ? '有効' : (() => { throw new Error('無効（サービス「+」から Google Slides API を追加）'); })());
   check('Web アプリ URL', () => ScriptApp.getService().getUrl() || '未デプロイ');
   check('API 応答テスト', () => JSON.stringify(dispatch_({ action: 'auth.me' })));
   Logger.log(out.join('\n'));
@@ -167,9 +173,9 @@ function routes_() {
 }
 
 function dispatch_(p) {
-  const fn = routes_()[p.action];
-  if (!fn) return { ok: false, error: '不明なアクションです: ' + p.action };
   try {
+    const fn = routes_()[p.action];
+    if (!fn) return { ok: false, error: '不明なアクションです: ' + p.action };
     const r = fn(p) || {};
     return Object.assign({ ok: true }, r);
   } catch (err) {

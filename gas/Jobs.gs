@@ -191,20 +191,63 @@ function classifySource_(id, isFolder) {
   throw new Error('対応していないファイル形式です（Google スライド / PowerPoint / PDF / 画像フォルダ）: ' + mt);
 }
 
-/* ---------------- ファイルアップロード（PowerPoint / PDF） ---------------- */
-function j_upload_(p) {
-  requireUser_(p);
-  const name = String(p.name || '').trim().replace(/[\\/:*?"<>|]/g, '_');
-  const m = name.match(/\.(pptx|ppt|pdf)$/i);
+/* ---------------- ファイルアップロード（PowerPoint / PDF・分割送信） ----------------
+ * 大きなファイルを 1 回の POST で送ると GAS がエラーページを返すため、
+ * ブラウザ側で Base64 を約 4MB ずつに分けて送り、最後に結合する。
+ */
+function uploadFileInfo_(name) {
+  const m = String(name || '').match(/\.(pptx|ppt|pdf)$/i);
   if (!m) throw new Error('PowerPoint（.pptx / .ppt）または PDF を選択してください');
-  const bytes = Utilities.base64Decode(String(p.data || ''));
-  const maxMb = numProp_('MAX_UPLOAD_MB', 25);
-  if (!bytes.length) throw new Error('ファイルが空です');
-  if (bytes.length > maxMb * 1024 * 1024) throw new Error('ファイルサイズは ' + maxMb + 'MB までです');
   const ext = m[1].toLowerCase();
-  const mime = ext === 'pdf' ? MimeType.PDF : (ext === 'ppt' ? PPT_MIMES[1] : PPT_MIMES[0]);
-  const folder = subFolder_(DriveApp.getFolderById(prop_('ROOT_FOLDER_ID')), 'uploads');
-  const f = folder.createFile(Utilities.newBlob(bytes, mime, name));
+  return { ext: ext, mime: ext === 'pdf' ? MimeType.PDF : (ext === 'ppt' ? PPT_MIMES[1] : PPT_MIMES[0]) };
+}
+
+function chunkFolder_() {
+  const uploads = subFolder_(DriveApp.getFolderById(prop_('ROOT_FOLDER_ID')), 'uploads');
+  return { uploads: uploads, chunks: subFolder_(uploads, '_chunks') };
+}
+
+function j_uploadChunk_(p) {
+  requireUser_(p);
+  const id = String(p.uploadId || '');
+  const index = Number(p.index);
+  const total = Number(p.total);
+  if (!/^[a-zA-Z0-9]{8,40}$/.test(id)) throw new Error('アップロード ID が不正です');
+  if (!(index >= 0 && index < total && total <= 30)) throw new Error('分割情報が不正です');
+  uploadFileInfo_(p.name);
+  const data = String(p.data || '');
+  if (!data || data.length > 6 * 1024 * 1024) throw new Error('分割データのサイズが不正です');
+  const folder = chunkFolder_().chunks;
+  const fname = id + '_' + index + '.b64';
+  const it = folder.getFilesByName(fname);
+  while (it.hasNext()) it.next().setTrashed(true);
+  folder.createFile(fname, data, MimeType.PLAIN_TEXT);
+  return { received: index + 1, total: total };
+}
+
+function j_uploadFinish_(p) {
+  requireUser_(p);
+  const id = String(p.uploadId || '');
+  const total = Number(p.total);
+  if (!/^[a-zA-Z0-9]{8,40}$/.test(id)) throw new Error('アップロード ID が不正です');
+  const info = uploadFileInfo_(p.name);
+  const name = String(p.name).trim().replace(/[\\/:*?"<>|]/g, '_');
+  const dirs = chunkFolder_();
+  const files = [];
+  let b64 = '';
+  for (let i = 0; i < total; i++) {
+    const it = dirs.chunks.getFilesByName(id + '_' + i + '.b64');
+    if (!it.hasNext()) throw new Error('アップロードの一部が欠けています（' + (i + 1) + '/' + total + '）。もう一度お試しください');
+    const f = it.next();
+    files.push(f);
+    b64 += f.getBlob().getDataAsString();
+  }
+  const bytes = Utilities.base64Decode(b64);
+  const maxMb = numProp_('MAX_UPLOAD_MB', 40);
+  if (bytes.length > maxMb * 1024 * 1024) throw new Error('ファイルサイズは ' + maxMb + 'MB までです');
+  if (p.size && Number(p.size) !== bytes.length) throw new Error('アップロードしたファイルのサイズが一致しません。もう一度お試しください');
+  const f = dirs.uploads.createFile(Utilities.newBlob(bytes, info.mime, name));
+  files.forEach(x => x.setTrashed(true));
   return { fileId: f.getId(), name: name };
 }
 

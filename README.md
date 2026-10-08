@@ -92,7 +92,7 @@ Docker を使わない場合は ffmpeg と日本語フォント（Noto Sans CJK 
 | PDF | Gemini に PDF を渡して数ページずつセリフ抽出。ページ画像はレンダラーの pdftoppm で生成（縦長ページは左右に黒帯） |
 | 画像フォルダ | ファイル名順。同名 .txt をノートとして使用 |
 
-Drive の URL 指定のほか、画面からのアップロード（25MB まで、`MAX_UPLOAD_MB` で変更）にも対応。
+Drive の URL 指定のほか、画面からのアップロード（40MB まで、約 3MB ずつ分割送信。`MAX_UPLOAD_MB` で変更）にも対応。
 GAS の「サービス」に **Google Slides API** と **Drive API** の両方を追加してください。
 
 ## 尺合わせのルール

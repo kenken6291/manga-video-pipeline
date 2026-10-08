@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>マンガ動画パイプライン</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        ink: '#1C2541',      // ケンのネイビー
+        inkSoft: '#3A4566',
+        paper: '#EEF1F6',
+        plum: '#6A4C9C',     // ミナミの紫
+        blush: '#E06A8E',    // ミナミのスニーカー
+        reel: '#0F1428',
+      },
+      fontFamily: {
+        head: ['"Dela Gothic One"', '"Hiragino Kaku Gothic StdN"', 'sans-serif'],
+        body: ['"Zen Kaku Gothic New"', '"Hiragino Sans"', '"Yu Gothic"', 'sans-serif'],
+      },
+    },
+  },
+};
+</script>
+<style>
+  body { font-family: 'Zen Kaku Gothic New', sans-serif; }
+  .sprocket { background-image: radial-gradient(circle, #EEF1F6 3px, transparent 3.5px); background-size: 18px 12px; background-repeat: repeat-x; height: 12px; }
+  .frame { transition: background-color .3s, color .3s; }
+  .frame[data-state="done"] { background: #6A4C9C; color: #fff; }
+  .frame[data-state="now"] { background: #E06A8E; color: #fff; }
+  .frame[data-state="todo"] { background: #2A3352; color: #8C96B5; }
+  .frame[data-state="error"] { background: #B3261E; color: #fff; }
+  :focus-visible { outline: 3px solid #E06A8E; outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+  .pulse { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .55; } }
+</style>
+</head>
+<body class="bg-paper text-ink min-h-screen">
+
+<!-- ========== 認証画面 ========== -->
+<section id="authView" class="hidden min-h-screen grid md:grid-cols-2">
+  <div class="bg-reel text-paper p-8 md:p-14 flex flex-col justify-between">
+    <div>
+      <div class="sprocket mb-6 opacity-40"></div>
+      <h1 class="font-head text-4xl md:text-5xl leading-tight">漫画30ページを、<br>30分の動画に。</h1>
+      <p class="mt-6 text-lg text-[#C3CAE0] max-w-md leading-relaxed">
+        Google スライドの漫画シートから、キャラクターごとの声・字幕・BGM 付きの長尺動画を自動でつくります。
+      </p>
+    </div>
+    <ol class="mt-10 space-y-3 text-[#C3CAE0]">
+      <li><span class="text-blush font-bold">1</span>　スライドの URL を入れる</li>
+      <li><span class="text-blush font-bold">2</span>　セリフ抽出と音声合成が自動で進む</li>
+      <li><span class="text-blush font-bold">3</span>　完成した MP4 がドライブに届く</li>
+    </ol>
+  </div>
+
+  <div class="p-6 md:p-14 flex items-center justify-center">
+    <div class="w-full max-w-sm">
+      <div class="flex gap-1 mb-6 border-b-2 border-ink/15" role="tablist">
+        <button class="tab px-3 py-2 font-bold -mb-0.5 border-b-2" data-tab="login" role="tab">ログイン</button>
+        <button class="tab px-3 py-2 font-bold -mb-0.5 border-b-2" data-tab="register" role="tab">新規登録</button>
+        <button class="tab px-3 py-2 font-bold -mb-0.5 border-b-2" data-tab="reset" role="tab">再発行</button>
+      </div>
+
+      <form id="loginForm" class="tabPanel space-y-4" data-panel="login">
+        <label class="block">
+          <span class="text-sm font-bold">メールアドレス</span>
+          <input name="email" type="email" required autocomplete="username" class="input">
+        </label>
+        <label class="block">
+          <span class="text-sm font-bold">パスワード</span>
+          <div class="pwWrap"><input name="password" type="password" required autocomplete="current-password" class="input pr-12"></div>
+        </label>
+        <button class="btn-primary w-full">ログイン</button>
+        <button type="button" class="text-sm underline text-inkSoft" data-goto="reset">パスワードをお忘れの方</button>
+      </form>
+
+      <form id="registerForm" class="tabPanel space-y-4 hidden" data-panel="register">
+        <label class="block">
+          <span class="text-sm font-bold">メールアドレス</span>
+          <input name="email" type="email" required autocomplete="email" class="input">
+        </label>
+        <label class="block">
+          <span class="text-sm font-bold">ニックネーム</span>
+          <input name="nickname" required maxlength="30" class="input">
+        </label>
+        <p class="text-sm text-inkSoft">登録すると仮パスワードがメールで届きます。初回ログイン後に本パスワードへ変更してください。</p>
+        <button class="btn-primary w-full">登録する</button>
+      </form>
+
+      <form id="resetForm" class="tabPanel space-y-4 hidden" data-panel="reset">
+        <label class="block">
+          <span class="text-sm font-bold">登録したメールアドレス</span>
+          <input name="email" type="email" required autocomplete="email" class="input">
+        </label>
+        <p class="text-sm text-inkSoft">新しい仮パスワードをメールでお送りします。</p>
+        <button class="btn-primary w-full">仮パスワードを再発行</button>
+      </form>
+
+      <div id="authMsg" class="mt-5 text-sm hidden rounded-lg p-3"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== パスワード変更 ========== -->
+<div id="pwModal" class="hidden fixed inset-0 bg-reel/70 z-50 flex items-center justify-center p-4">
+  <form id="pwForm" class="bg-white rounded-2xl p-6 w-full max-w-sm space-y-4 shadow-2xl">
+    <h2 class="font-head text-xl">パスワードの変更</h2>
+    <p id="pwNotice" class="text-sm text-inkSoft">仮パスワードでログインしています。新しいパスワードを設定してください。</p>
+    <label class="block"><span class="text-sm font-bold">現在のパスワード</span>
+      <div class="pwWrap"><input name="currentPassword" type="password" required autocomplete="current-password" class="input pr-12"></div></label>
+    <label class="block"><span class="text-sm font-bold">新しいパスワード（8文字以上・英数字）</span>
+      <div class="pwWrap"><input name="newPassword" type="password" required minlength="8" autocomplete="new-password" class="input pr-12"></div></label>
+    <label class="block"><span class="text-sm font-bold">新しいパスワード（確認）</span>
+      <div class="pwWrap"><input name="confirm" type="password" required minlength="8" autocomplete="new-password" class="input pr-12"></div></label>
+    <div id="pwMsg" class="text-sm text-red-700 hidden"></div>
+    <div class="flex gap-2">
+      <button type="button" id="pwCancel" class="btn-ghost flex-1">閉じる</button>
+      <button class="btn-primary flex-1">変更する</button>
+    </div>
+  </form>
+</div>
+
+<!-- ========== メイン画面 ========== -->
+<section id="appView" class="hidden">
+  <header class="bg-reel text-paper">
+    <div class="max-w-5xl mx-auto px-5 py-4 flex items-center gap-4">
+      <h1 class="font-head text-lg md:text-xl">マンガ動画パイプライン</h1>
+      <div class="ml-auto flex items-center gap-3 text-sm">
+        <span id="whoami" class="hidden sm:inline text-[#C3CAE0]"></span>
+        <button id="openPw" class="underline">パスワード変更</button>
+        <button id="logoutBtn" class="rounded-full border border-paper/40 px-3 py-1">ログアウト</button>
+      </div>
+    </div>
+    <div class="sprocket opacity-30"></div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-5 py-8 space-y-10">
+    <!-- 新規ジョブ -->
+    <section>
+      <h2 class="font-head text-2xl mb-4">新しい動画をつくる</h2>
+      <form id="jobForm" class="bg-white rounded-2xl p-5 md:p-6 shadow-sm grid gap-4 md:grid-cols-6">
+        <label class="md:col-span-6 block">
+          <span class="text-sm font-bold">Google スライド（または画像フォルダ）の URL</span>
+          <input name="sourceUrl" required placeholder="https://docs.google.com/presentation/d/..." class="input">
+          <span class="text-xs text-inkSoft">運営アカウントに閲覧権限を共有してください。スピーカーノートにセリフがあればそれを優先し、なければ画像から読み取ります。</span>
+        </label>
+        <label class="md:col-span-3 block">
+          <span class="text-sm font-bold">タイトル（省略可）</span>
+          <input name="title" maxlength="80" class="input">
+        </label>
+        <label class="md:col-span-1 block">
+          <span class="text-sm font-bold">目標尺（分）</span>
+          <input name="targetMinutes" type="number" min="0" max="120" value="30" class="input">
+        </label>
+        <label class="md:col-span-2 block">
+          <span class="text-sm font-bold">画面の動き</span>
+          <select name="motion" class="input">
+            <option value="kenburns">ゆっくりズーム・パン</option>
+            <option value="none">静止画（処理が速い）</option>
+          </select>
+        </label>
+        <div class="md:col-span-6 flex items-center gap-4">
+          <button class="btn-primary">動画づくりを開始</button>
+          <span id="jobMsg" class="text-sm"></span>
+        </div>
+      </form>
+    </section>
+
+    <!-- ジョブ一覧 -->
+    <section>
+      <div class="flex items-baseline gap-3 mb-4">
+        <h2 class="font-head text-2xl">制作中・完成した動画</h2>
+        <label id="allWrap" class="hidden text-sm ml-auto"><input type="checkbox" id="showAll"> 全員分</label>
+        <button id="reloadBtn" class="text-sm underline ml-auto">更新</button>
+      </div>
+      <div id="jobList" class="space-y-4"></div>
+      <p id="jobEmpty" class="hidden text-inkSoft">まだ動画がありません。上のフォームから始めましょう。</p>
+    </section>
+
+    <!-- 管理者 -->
+    <section id="adminSec" class="hidden">
+      <h2 class="font-head text-2xl mb-4">管理者設定</h2>
+      <div class="grid gap-6 md:grid-cols-2">
+        <div class="bg-white rounded-2xl p-5 shadow-sm">
+          <h3 class="font-bold mb-1">話者と声</h3>
+          <p class="text-xs text-inkSoft mb-3">ノートの「話者名:」と一致させます。演技指示は全セリフ共通の味付けです。</p>
+          <div id="voiceRows" class="space-y-2"></div>
+          <div class="flex gap-2 mt-3">
+            <button id="addVoice" class="btn-ghost text-sm">＋ 話者を追加</button>
+            <button id="saveVoices" class="btn-primary text-sm ml-auto">保存</button>
+          </div>
+          <p id="voiceMsg" class="text-sm mt-2"></p>
+          <datalist id="prebuiltList"></datalist>
+        </div>
+        <div class="bg-white rounded-2xl p-5 shadow-sm text-sm space-y-3">
+          <h3 class="font-bold">外部エージェント（Claude / Gemini Spark）からの実行</h3>
+          <dl id="adminInfo" class="space-y-2 break-all"></dl>
+          <p class="text-inkSoft">Webhook の例：</p>
+          <pre id="webhookSample" class="bg-reel text-paper rounded-lg p-3 overflow-x-auto text-xs leading-relaxed"></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+</section>
+
+<div id="toast" class="hidden fixed bottom-5 left-1/2 -translate-x-1/2 bg-reel text-paper px-5 py-3 rounded-full shadow-lg z-50 text-sm"></div>
+
+<template id="eyeTpl">
+  <button type="button" class="eye absolute right-2 top-1/2 -translate-y-1/2 p-2 text-inkSoft" aria-label="パスワードを表示">
+    <svg class="on" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
+    <svg class="off hidden" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+  </button>
+</template>
+
+<style type="text/tailwindcss">
+  .input { @apply mt-1 w-full rounded-lg border-2 border-ink/15 bg-white px-3 py-2.5 text-base focus:border-plum focus:outline-none; }
+  .btn-primary { @apply rounded-full bg-ink text-paper font-bold px-6 py-3 hover:bg-plum disabled:opacity-50 transition-colors; }
+  .btn-ghost { @apply rounded-full border-2 border-ink/20 font-bold px-4 py-2 hover:border-plum; }
+  .pwWrap { @apply relative; }
+</style>
+
+<script src="config.js"></script>
+<script>
+/* ===== 設定：config.js の APP_CONFIG.GAS_URL を使用 ===== */
+const GAS_URL = ((window.APP_CONFIG || {}).GAS_URL || '').trim();
+const CONFIG_OK = /^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(GAS_URL) && !/X{6,}/.test(GAS_URL);
+
+const STEPS = [
+  ['EXPORT', '書き出し'], ['EXTRACT', 'セリフ抽出'], ['TTS', '音声合成'],
+  ['TIMELINE', '尺合わせ'], ['DISPATCH', '送信'], ['RENDERING', 'レンダリング'],
+];
+const STATUS_LABEL = {
+  QUEUED: '待機中', RUNNING: '処理中', RENDER_READY: 'レンダラー待ち', RENDERING: 'レンダリング中',
+  DONE: '完成', ERROR: 'エラー', CANCELED: '中止',
+};
+
+const state = { token: null, user: null, timer: null, voices: [], prebuilt: [] };
+try { state.token = localStorage.getItem('mvp_token'); } catch (e) { /* 使えない環境 */ }
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+async function api(action, data = {}) {
+  if (!CONFIG_OK) throw new Error('config.js の GAS_URL が未設定です');
+  const res = await fetch(GAS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action, token: state.token, ...data }),
+  });
+  const j = await res.json();
+  if (!j.ok) {
+    if (/有効期限|ログインしてください/.test(j.error || '')) { setToken(null); showAuth(); }
+    throw new Error(j.error || 'エラーが発生しました');
+  }
+  return j;
+}
+
+function setToken(t) {
+  state.token = t;
+  try { t ? localStorage.setItem('mvp_token', t) : localStorage.removeItem('mvp_token'); } catch (e) { /* noop */ }
+}
+
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.add('hidden'), 3500);
+}
+
+async function withBusy(btn, fn) {
+  btn.disabled = true;
+  try { await fn(); } finally { btn.disabled = false; }
+}
+
+/* ===== パスワード表示切り替え ===== */
+document.querySelectorAll('.pwWrap').forEach(w => {
+  const btn = $('#eyeTpl').content.firstElementChild.cloneNode(true);
+  w.appendChild(btn);
+  btn.addEventListener('click', () => {
+    const input = w.querySelector('input');
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    btn.querySelector('.on').classList.toggle('hidden', show);
+    btn.querySelector('.off').classList.toggle('hidden', !show);
+    btn.setAttribute('aria-label', show ? 'パスワードを隠す' : 'パスワードを表示');
+  });
+});
+
+/* ===== 認証 ===== */
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => {
+    const on = t.dataset.tab === name;
+    t.classList.toggle('border-plum', on);
+    t.classList.toggle('text-plum', on);
+    t.classList.toggle('border-transparent', !on);
+    t.setAttribute('aria-selected', on);
+  });
+  document.querySelectorAll('.tabPanel').forEach(p => p.classList.toggle('hidden', p.dataset.panel !== name));
+  authMsg('');
+}
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+document.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.goto)));
+
+function authMsg(msg, ok) {
+  const el = $('#authMsg');
+  if (!msg) { el.classList.add('hidden'); return; }
+  el.className = 'mt-5 text-sm rounded-lg p-3 ' + (ok ? 'bg-plum/10 text-plum' : 'bg-red-50 text-red-700');
+  el.innerHTML = msg;
+}
+
+$('#loginForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  withBusy(e.submitter, async () => {
+    try {
+      const r = await api('auth.login', { email: f.get('email'), password: f.get('password') });
+      setToken(r.token);
+      state.user = r.user;
+      e.target.reset();
+      enterApp();
+    } catch (err) { authMsg(esc(err.message)); }
+  });
+});
+
+$('#registerForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  withBusy(e.submitter, async () => {
+    try {
+      const r = await api('auth.register', { email: f.get('email'), nickname: f.get('nickname') });
+      let html = esc(r.message);
+      if (r.tempPassword) html += '<br>仮パスワード：<b class="text-lg select-all">' + esc(r.tempPassword) + '</b>';
+      e.target.reset();
+      switchTab('login');
+      authMsg(html, true);
+    } catch (err) { authMsg(esc(err.message)); }
+  });
+});
+
+$('#resetForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  withBusy(e.submitter, async () => {
+    try {
+      const r = await api('auth.resetPassword', { email: f.get('email') });
+      e.target.reset();
+      switchTab('login');
+      authMsg(esc(r.message), true);
+    } catch (err) { authMsg(esc(err.message)); }
+  });
+});
+
+function openPw(forced) {
+  $('#pwNotice').classList.toggle('hidden', !forced);
+  $('#pwCancel').classList.toggle('hidden', forced);
+  $('#pwMsg').classList.add('hidden');
+  $('#pwModal').classList.remove('hidden');
+}
+$('#openPw').addEventListener('click', () => openPw(false));
+$('#pwCancel').addEventListener('click', () => $('#pwModal').classList.add('hidden'));
+$('#pwForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const msg = $('#pwMsg');
+  if (f.get('newPassword') !== f.get('confirm')) {
+    msg.textContent = '確認用パスワードが一致しません';
+    msg.classList.remove('hidden');
+    return;
+  }
+  withBusy(e.submitter, async () => {
+    try {
+      const r = await api('auth.changePassword', { currentPassword: f.get('currentPassword'), newPassword: f.get('newPassword') });
+      state.user = r.user;
+      e.target.reset();
+      $('#pwModal').classList.add('hidden');
+      toast('パスワードを変更しました');
+      enterApp();
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.classList.remove('hidden');
+    }
+  });
+});
+
+$('#logoutBtn').addEventListener('click', async () => {
+  try { await api('auth.logout'); } catch (e) { /* noop */ }
+  setToken(null);
+  state.user = null;
+  showAuth();
+});
+
+function showAuth() {
+  clearTimeout(state.timer);
+  $('#appView').classList.add('hidden');
+  $('#authView').classList.remove('hidden');
+  switchTab('login');
+}
+
+function enterApp() {
+  $('#authView').classList.add('hidden');
+  $('#appView').classList.remove('hidden');
+  $('#whoami').textContent = state.user.nickname + ' さん';
+  if (state.user.mustChange) { openPw(true); return; }
+  $('#adminSec').classList.toggle('hidden', !state.user.isAdmin);
+  $('#allWrap').classList.toggle('hidden', !state.user.isAdmin);
+  loadJobs();
+  if (state.user.isAdmin) loadAdmin();
+}
+
+/* ===== ジョブ ===== */
+$('#jobForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  withBusy(e.submitter, async () => {
+    $('#jobMsg').textContent = 'スライドを確認しています…';
+    try {
+      await api('jobs.create', {
+        sourceUrl: f.get('sourceUrl'), title: f.get('title'),
+        targetMinutes: f.get('targetMinutes'), motion: f.get('motion'),
+      });
+      e.target.reset();
+      $('#jobMsg').textContent = '';
+      toast('受け付けました。完成したらメールでお知らせします');
+      loadJobs();
+    } catch (err) { $('#jobMsg').textContent = err.message; }
+  });
+});
+
+$('#reloadBtn').addEventListener('click', () => loadJobs());
+$('#showAll').addEventListener('change', () => loadJobs());
+
+async function loadJobs() {
+  clearTimeout(state.timer);
+  let jobs = [];
+  try {
+    jobs = (await api('jobs.list', { all: $('#showAll').checked })).jobs;
+  } catch (err) { toast(err.message); }
+  renderJobs(jobs);
+  const active = jobs.some(j => ['QUEUED', 'RUNNING', 'RENDER_READY', 'RENDERING'].includes(j.status));
+  state.timer = setTimeout(loadJobs, active ? 8000 : 60000);
+}
+
+function stepStates(job) {
+  const idx = STEPS.findIndex(s => s[0] === job.step);
+  return STEPS.map((s, i) => {
+    if (job.status === 'DONE') return 'done';
+    if (i < idx) return 'done';
+    if (i === idx) return job.status === 'ERROR' ? 'error' : (['CANCELED'].includes(job.status) ? 'todo' : 'now');
+    return 'todo';
+  });
+}
+
+function fmtDate(s) {
+  const d = new Date(s);
+  return isNaN(d) ? '' : d.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function renderJobs(jobs) {
+  $('#jobEmpty').classList.toggle('hidden', jobs.length > 0);
+  $('#jobList').innerHTML = jobs.map(j => {
+    const states = stepStates(j);
+    const running = ['QUEUED', 'RUNNING', 'RENDER_READY', 'RENDERING'].includes(j.status);
+    const frames = STEPS.map((s, i) =>
+      `<div class="frame flex-1 min-w-[4.5rem] px-2 py-2 text-xs text-center rounded ${states[i] === 'now' ? 'pulse' : ''}" data-state="${states[i]}">${s[1]}</div>`
+    ).join('');
+    return `
+    <article class="bg-white rounded-2xl shadow-sm overflow-hidden">
+      <div class="p-5 flex flex-wrap items-start gap-3">
+        <div class="min-w-0">
+          <h3 class="font-bold text-lg truncate">${esc(j.title)}</h3>
+          <p class="text-xs text-inkSoft">${fmtDate(j.createdAt)} 開始　目標 ${esc(j.targetMinutes)} 分　${j.origin === 'webhook' ? 'Webhook から' : ''}${state.user.isAdmin && $('#showAll').checked ? '　' + esc(j.ownerEmail) : ''}</p>
+        </div>
+        <span class="ml-auto shrink-0 text-sm font-bold ${j.status === 'ERROR' ? 'text-red-700' : j.status === 'DONE' ? 'text-plum' : 'text-ink'}">${STATUS_LABEL[j.status] || esc(j.status)}　${esc(j.progress)}%</span>
+      </div>
+      <div class="bg-reel px-3 pt-2 pb-3">
+        <div class="sprocket opacity-25 mb-2"></div>
+        <div class="flex gap-1.5 overflow-x-auto">${frames}</div>
+      </div>
+      <div class="p-5 flex flex-wrap items-center gap-3 text-sm">
+        <p class="flex-1 min-w-[12rem] ${j.status === 'ERROR' ? 'text-red-700' : 'text-inkSoft'}">${esc(j.message)}</p>
+        ${j.outputUrl ? `<a class="btn-primary !py-2 text-sm" href="${esc(j.outputUrl)}" target="_blank" rel="noopener">動画を開く</a>` : ''}
+        ${j.srtUrl ? `<a class="underline" href="${esc(j.srtUrl)}" target="_blank" rel="noopener">字幕 SRT</a>` : ''}
+        ${state.user.isAdmin && j.workFolderUrl ? `<a class="underline" href="${esc(j.workFolderUrl)}" target="_blank" rel="noopener">作業フォルダ</a>` : ''}
+        ${['ERROR', 'CANCELED'].includes(j.status) ? `<button class="btn-ghost text-sm" data-retry="${esc(j.jobId)}">再実行</button>` : ''}
+        ${running ? `<button class="text-sm underline text-inkSoft" data-cancel="${esc(j.jobId)}">中止</button>` : ''}
+      </div>
+    </article>`;
+  }).join('');
+}
+
+$('#jobList').addEventListener('click', async e => {
+  const retry = e.target.closest('[data-retry]');
+  const cancel = e.target.closest('[data-cancel]');
+  try {
+    if (retry) { await api('jobs.retry', { jobId: retry.dataset.retry }); toast('再実行します'); loadJobs(); }
+    if (cancel && confirm('このジョブを中止しますか？')) { await api('jobs.cancel', { jobId: cancel.dataset.cancel }); loadJobs(); }
+  } catch (err) { toast(err.message); }
+});
+
+/* ===== 管理者 ===== */
+async function loadAdmin() {
+  try {
+    const [v, info] = await Promise.all([api('voices.list'), api('admin.info')]);
+    state.voices = v.voices;
+    $('#prebuiltList').innerHTML = v.prebuilt.map(n => `<option value="${esc(n)}">`).join('');
+    renderVoices();
+    $('#adminInfo').innerHTML = [
+      ['Web アプリ URL', info.webAppUrl], ['Webhook API キー', info.webhookApiKey],
+      ['レンダリング', info.renderMode === 'local' ? 'ローカル（render.py --poll）' : 'GitHub Actions（' + info.githubRepo + '）'],
+      ['TTS モデル', info.ttsModel],
+    ].map(([k, val]) => `<div><dt class="text-inkSoft text-xs">${k}</dt><dd class="font-mono text-xs">${esc(val)}</dd></div>`).join('') +
+      `<div><a class="underline" href="${esc(info.rootFolderUrl)}" target="_blank" rel="noopener">素材フォルダ（bgm / se / outputs）を開く</a></div>`;
+    $('#webhookSample').textContent = `POST ${info.webAppUrl}
+Content-Type: text/plain
+
+{
+  "action": "webhook.createJob",
+  "apiKey": "${info.webhookApiKey}",
+  "sourceUrl": "https://docs.google.com/presentation/d/...",
+  "title": "第12話 キャンピングカーで宇宙博",
+  "targetMinutes": 30,
+  "callbackUrl": "https://example.com/hook"
+}
+
+状態確認: {"action":"webhook.getJob","apiKey":"...","jobId":"J..."}`;
+  } catch (err) { toast(err.message); }
+}
+
+function renderVoices() {
+  $('#voiceRows').innerHTML = state.voices.map((v, i) => `
+    <div class="grid grid-cols-[1fr_1fr_1.4fr_auto_auto] gap-1.5 items-center" data-i="${i}">
+      <input class="input !mt-0 !py-1.5 text-sm" data-k="speaker" value="${esc(v.speaker)}" aria-label="話者名">
+      <input class="input !mt-0 !py-1.5 text-sm" data-k="voice" list="prebuiltList" value="${esc(v.voice)}" aria-label="声">
+      <input class="input !mt-0 !py-1.5 text-sm" data-k="style" value="${esc(v.style)}" placeholder="演技指示" aria-label="演技指示">
+      <input type="color" data-k="color" value="${esc(v.color || '#ffffff')}" class="w-9 h-9 rounded" aria-label="字幕の色">
+      <button type="button" class="text-inkSoft px-1" data-del="${i}" aria-label="削除">×</button>
+    </div>`).join('');
+}
+
+$('#voiceRows').addEventListener('input', e => {
+  const row = e.target.closest('[data-i]');
+  if (row && e.target.dataset.k) state.voices[row.dataset.i][e.target.dataset.k] = e.target.value;
+});
+$('#voiceRows').addEventListener('click', e => {
+  const del = e.target.closest('[data-del]');
+  if (del) { state.voices.splice(Number(del.dataset.del), 1); renderVoices(); }
+});
+$('#addVoice').addEventListener('click', () => {
+  state.voices.push({ speaker: '', voice: 'Kore', style: '', color: '#ffffff' });
+  renderVoices();
+});
+$('#saveVoices').addEventListener('click', e => withBusy(e.currentTarget, async () => {
+  try {
+    const r = await api('voices.save', { voices: state.voices });
+    state.voices = r.voices;
+    renderVoices();
+    $('#voiceMsg').textContent = '保存しました';
+  } catch (err) { $('#voiceMsg').textContent = err.message; }
+}));
+
+/* ===== 起動 ===== */
+(async function init() {
+  if (!CONFIG_OK) {
+    showAuth();
+    authMsg('config.js の <b>GAS_URL</b> に GAS の Web アプリ URL を設定してください。');
+    document.querySelectorAll('.tabPanel button').forEach(b => { b.disabled = true; });
+    return;
+  }
+  if (!state.token) { showAuth(); return; }
+  try {
+    state.user = (await api('auth.me')).user;
+    enterApp();
+  } catch (e) { showAuth(); }
+})();
+</script>
+</body>
+</html>

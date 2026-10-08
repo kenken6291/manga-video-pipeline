@@ -18,6 +18,7 @@ GAS が作った timeline.json を読み込み、以下を行う。
   GAS_URL, RENDERER_KEY,
   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN
 任意
+  ※ PDF ソースには poppler-utils（pdftoppm）が必要
   WORK_DIR(既定 ./work) FPS(30) X264_PRESET(veryfast) X264_CRF(21) KENBURNS_ZOOM(0.10)
   FONT_NAME(Noto Sans CJK JP) FONTS_DIR SEGMENT_WORKERS KEEP_WORK=1 POLL_INTERVAL(30)
 """
@@ -384,6 +385,18 @@ def render_segment(p, img: Path, seg_dir: Path, w, h, speakers, show_speaker):
 
 
 # ------------------------------------------------------------
+# PDF → ページ画像
+# ------------------------------------------------------------
+def pdf_page_png(pdf: Path, page: int, out_dir: Path) -> Path:
+    prefix = out_dir / f"{pdf.stem}_p{page:03d}"
+    png = prefix.with_suffix(".png")
+    if not png.exists():
+        subprocess.run(["pdftoppm", "-png", "-f", str(page), "-l", str(page), "-singlefile",
+                        "-scale-to", "3840", str(pdf), str(prefix)], check=True)
+    return png
+
+
+# ------------------------------------------------------------
 # メイン処理
 # ------------------------------------------------------------
 def ext_of(name, default):
@@ -434,6 +447,19 @@ def run_job(gas: Gas, job_id, timeline_file_id):
             if i % 20 == 0:
                 gas.progress(job_id, 1 + 9 * i / len(futs), f"素材をダウンロード中 {i}/{len(futs)}")
 
+    # ---- ページ画像（PDF はここでラスタライズ）----
+    images = {}
+    pdf_pages = [p for p in pages if p["image"].get("pdfPage")]
+    if pdf_pages:
+        gas.progress(job_id, 10, f"PDF をページ画像に変換中（{len(pdf_pages)} ページ）")
+        with ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as ex:
+            futs = {ex.submit(pdf_page_png, cache[p["image"]["fileId"]], int(p["image"]["pdfPage"]), assets): p["index"]
+                    for p in pdf_pages}
+            for fut in as_completed(futs):
+                images[futs[fut]] = fut.result()
+    for p in pages:
+        images.setdefault(p["index"], cache[p["image"]["fileId"]])
+
     # ---- 音声 ----
     gas.progress(job_id, 10, "音声トラックを合成中")
     mix_wav = base / "mix.wav"
@@ -447,7 +473,7 @@ def run_job(gas: Gas, job_id, timeline_file_id):
     done = 0
     canceled = False
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = [ex.submit(render_segment, p, cache[p["image"]["fileId"]], seg_dir, w, h, speakers, show_speaker)
+        futs = [ex.submit(render_segment, p, images[p["index"]], seg_dir, w, h, speakers, show_speaker)
                 for p in pages]
         for fut in as_completed(futs):
             fut.result()

@@ -4,7 +4,8 @@
   "exceptionLogging": "STACKDRIVER",
   "dependencies": {
     "enabledAdvancedServices": [
-      { "userSymbol": "Slides", "serviceId": "slides", "version": "v1" }
+      { "userSymbol": "Slides", "serviceId": "slides", "version": "v1" },
+      { "userSymbol": "Drive", "serviceId": "drive", "version": "v3" }
     ]
   },
   "oauthScopes": [

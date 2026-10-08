@@ -154,31 +154,63 @@ function wh_listJobs_(p) {
 /* ============================================================
  * ジョブ作成
  * ============================================================ */
+const PPT_MIMES = [
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-powerpoint',
+];
+
 function parseSource_(input) {
   const s = String(input || '').trim();
-  if (!s) throw new Error('Google スライドまたは Drive フォルダの URL を入力してください');
-  let m;
-  if ((m = s.match(/\/presentation\/d\/([a-zA-Z0-9_-]+)/))) return { type: 'slides', id: m[1] };
-  if ((m = s.match(/\/folders\/([a-zA-Z0-9_-]+)/))) return { type: 'folder', id: m[1] };
-  if (/^[a-zA-Z0-9_-]{20,}$/.test(s)) {
-    try { SlidesApp.openById(s); return { type: 'slides', id: s }; } catch (e) { /* 次へ */ }
-    try { DriveApp.getFolderById(s); return { type: 'folder', id: s }; } catch (e) { /* 次へ */ }
-  }
-  throw new Error('Google スライドまたは Drive フォルダの URL を認識できませんでした');
+  if (!s) throw new Error('スライド / PowerPoint / PDF / 画像フォルダの URL を入力してください');
+  let m = s.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (m) return classifySource_(m[1], true);
+  m = s.match(/\/(?:presentation|file|document)\/d\/([a-zA-Z0-9_-]+)/) || s.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (m) return classifySource_(m[1], false);
+  if (/^[a-zA-Z0-9_-]{20,}$/.test(s)) return classifySource_(s, false);
+  throw new Error('URL を認識できませんでした（Google スライド / PowerPoint / PDF / Drive フォルダに対応）');
 }
 
-function verifySource_(src) {
-  try {
-    if (src.type === 'slides') return { title: SlidesApp.openById(src.id).getName() };
-    return { title: DriveApp.getFolderById(src.id).getName() };
-  } catch (e) {
-    throw new Error('ソースにアクセスできません。運営アカウント（' + Session.getEffectiveUser().getEmail() + '）に閲覧権限を共有してください');
+function classifySource_(id, isFolder) {
+  const denied = () => new Error('ソースにアクセスできません。運営アカウント（' +
+    Session.getEffectiveUser().getEmail() + '）に閲覧権限を共有してください');
+  if (isFolder) {
+    try { return { type: 'folder', id: id, title: DriveApp.getFolderById(id).getName() }; } catch (e) { throw denied(); }
   }
+  let f;
+  try {
+    f = DriveApp.getFileById(id);
+  } catch (e) {
+    try { return { type: 'folder', id: id, title: DriveApp.getFolderById(id).getName() }; } catch (e2) { throw denied(); }
+  }
+  const mt = f.getMimeType();
+  const name = f.getName();
+  const title = name.replace(/\.(pptx?|pdf)$/i, '');
+  if (mt === MimeType.GOOGLE_SLIDES) return { type: 'slides', id: id, title: title };
+  if (PPT_MIMES.indexOf(mt) >= 0 || /\.pptx?$/i.test(name)) return { type: 'pptx', id: id, title: title };
+  if (mt === MimeType.PDF || /\.pdf$/i.test(name)) return { type: 'pdf', id: id, title: title };
+  throw new Error('対応していないファイル形式です（Google スライド / PowerPoint / PDF / 画像フォルダ）: ' + mt);
+}
+
+/* ---------------- ファイルアップロード（PowerPoint / PDF） ---------------- */
+function j_upload_(p) {
+  requireUser_(p);
+  const name = String(p.name || '').trim().replace(/[\\/:*?"<>|]/g, '_');
+  const m = name.match(/\.(pptx|ppt|pdf)$/i);
+  if (!m) throw new Error('PowerPoint（.pptx / .ppt）または PDF を選択してください');
+  const bytes = Utilities.base64Decode(String(p.data || ''));
+  const maxMb = numProp_('MAX_UPLOAD_MB', 25);
+  if (!bytes.length) throw new Error('ファイルが空です');
+  if (bytes.length > maxMb * 1024 * 1024) throw new Error('ファイルサイズは ' + maxMb + 'MB までです');
+  const ext = m[1].toLowerCase();
+  const mime = ext === 'pdf' ? MimeType.PDF : (ext === 'ppt' ? PPT_MIMES[1] : PPT_MIMES[0]);
+  const folder = subFolder_(DriveApp.getFolderById(prop_('ROOT_FOLDER_ID')), 'uploads');
+  const f = folder.createFile(Utilities.newBlob(bytes, mime, name));
+  return { fileId: f.getId(), name: name };
 }
 
 function createJob_(owner, p, origin) {
-  const src = parseSource_(p.sourceUrl || p.presentationUrl || p.folderUrl || p.source);
-  const info = verifySource_(src);
+  const src = parseSource_(p.sourceUrl || p.presentationUrl || p.folderUrl || p.fileId || p.source);
+  const info = { title: src.title };
 
   const maxActive = numProp_('MAX_ACTIVE_JOBS_PER_USER', 2);
   const active = rows_('Jobs').filter(j => j.ownerEmail === owner && OPEN_STATUSES.indexOf(j.status) >= 0);
@@ -308,11 +340,15 @@ function checkStaleRendering_() {
 /* ============================================================
  * STEP 1 : スライド / 画像の書き出し
  * ============================================================ */
-function listSourcePages_(job) {
+function listSourcePages_(job, slidesId) {
   const maxPages = numProp_('MAX_PAGES', 60);
   const pages = [];
-  if (job.sourceType === 'slides') {
-    SlidesApp.openById(job.sourceId).getSlides().forEach(s => {
+  if (job.sourceType === 'pdf') {
+    const n = pdfPageCount_(DriveApp.getFileById(job.sourceId).getBlob());
+    if (n > maxPages) throw new Error('ページ数が上限（' + maxPages + '）を超えています: ' + n);
+    for (let i = 0; i < n; i++) pages.push({ index: i, pdfPage: i + 1, objectId: '', notes: '', imageFileId: '' });
+  } else if (slidesId) {
+    SlidesApp.openById(slidesId).getSlides().forEach(s => {
       let notes = '';
       try { notes = s.getNotesPage().getSpeakerNotesShape().getText().asString().trim(); } catch (e) { /* ノートなし */ }
       let skipped = false;
@@ -346,11 +382,25 @@ function listSourcePages_(job) {
 
 function stepExport_(job, deadline) {
   const work = DriveApp.getFolderById(job.workFolderId);
+  const src = readJson_(work, 'source.json') || {};
+
+  // PowerPoint は Google スライドに変換してから処理（スピーカーノートも引き継がれる）
+  if (job.sourceType === 'pptx' && !src.slidesId) {
+    stepProgress_(job, 0.02, 'PowerPoint を Google スライドに変換中');
+    src.slidesId = convertPptx_(job.sourceId, work);
+    writeJson_(work, 'source.json', src);
+  }
+  const slidesId = job.sourceType === 'pptx' ? src.slidesId : (job.sourceType === 'slides' ? job.sourceId : '');
+
   let pages = readJson_(work, 'pages.json');
   if (!pages) {
-    pages = listSourcePages_(job);
+    pages = listSourcePages_(job, slidesId);
     writeJson_(work, 'pages.json', pages);
   }
+
+  // PDF のページ画像はレンダラー側（pdftoppm）で生成する
+  if (job.sourceType === 'pdf') return advance_(job, 'EXTRACT', 'PDF ' + pages.length + ' ページを確認しました');
+
   const imgFolder = subFolder_(work, 'images');
   let changed = false;
   for (let i = 0; i < pages.length; i++) {
@@ -361,12 +411,130 @@ function stepExport_(job, deadline) {
       stepProgress_(job, i / pages.length, 'スライド画像を書き出し中 ' + i + '/' + pages.length);
       return false;
     }
-    pg.imageFileId = exportSlideImage_(job.sourceId, pg.objectId, imgFolder, pg.index);
+    pg.imageFileId = exportSlideImage_(slidesId, pg.objectId, imgFolder, pg.index);
     changed = true;
     if (i % 5 === 4) stepProgress_(job, (i + 1) / pages.length, 'スライド画像を書き出し中 ' + (i + 1) + '/' + pages.length);
   }
   if (changed) writeJson_(work, 'pages.json', pages);
   return advance_(job, 'EXTRACT', 'スライド ' + pages.length + ' 枚を書き出しました');
+}
+
+function convertPptx_(fileId, work) {
+  const src = DriveApp.getFileById(fileId);
+  let res;
+  try {
+    res = Drive.Files.copy({
+      name: src.getName().replace(/\.pptx?$/i, '') + '（変換）',
+      parents: [work.getId()],
+      mimeType: MimeType.GOOGLE_SLIDES,
+    }, fileId);
+  } catch (e) {
+    throw new Error('PowerPoint の変換に失敗しました（サービスに Drive API を追加してください）: ' + e.message);
+  }
+  return res.id;
+}
+
+/* ---------- PDF ---------- */
+function pdfPageCount_(blob) {
+  const raw = blob.getDataAsString('ISO-8859-1');
+  let n = (raw.match(/\/Type\s*\/Page(?![a-zA-Z])/g) || []).length;
+  if (!n) {
+    const counts = (raw.match(/\/Type\s*\/Pages[\s\S]{0,300}?\/Count\s+(\d+)/g) || [])
+      .map(x => Number((x.match(/\/Count\s+(\d+)/) || [])[1] || 0));
+    n = counts.length ? Math.max.apply(null, counts) : 0;
+  }
+  if (!n) {
+    const file = geminiUploadFile_(blob);
+    const res = geminiFetch_(prop_('GEMINI_TEXT_MODEL', 'gemini-3.8-flash'), {
+      contents: [{ role: 'user', parts: [
+        { text: 'この PDF の総ページ数を数字のみで答えてください。' },
+        { file_data: { mime_type: file.mimeType, file_uri: file.uri } },
+      ] }],
+      generationConfig: { temperature: 0 },
+    });
+    n = Number(geminiText_(res).replace(/[^\d]/g, '')) || 0;
+  }
+  if (!n) throw new Error('PDF のページ数を判定できませんでした');
+  return n;
+}
+
+function geminiUploadFile_(blob) {
+  const key = prop_('GEMINI_API_KEY', '');
+  const bytes = blob.getBytes();
+  const mime = blob.getContentType() || 'application/pdf';
+  const start = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/upload/v1beta/files', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      'x-goog-api-key': key,
+      'X-Goog-Upload-Protocol': 'resumable',
+      'X-Goog-Upload-Command': 'start',
+      'X-Goog-Upload-Header-Content-Length': String(bytes.length),
+      'X-Goog-Upload-Header-Content-Type': mime,
+    },
+    payload: JSON.stringify({ file: { display_name: blob.getName() || 'source.pdf' } }),
+    muteHttpExceptions: true,
+  });
+  const headers = start.getAllHeaders();
+  const urlKey = Object.keys(headers).find(k => k.toLowerCase() === 'x-goog-upload-url');
+  if (!urlKey) throw new Error('Gemini へのファイル送信に失敗しました: ' + start.getContentText().slice(0, 200));
+  const up = UrlFetchApp.fetch(headers[urlKey], {
+    method: 'post',
+    contentType: mime,
+    headers: { 'X-Goog-Upload-Command': 'upload, finalize', 'X-Goog-Upload-Offset': '0' },
+    payload: bytes,
+    muteHttpExceptions: true,
+  });
+  let file = (JSON.parse(up.getContentText()) || {}).file;
+  if (!file || !file.uri) throw new Error('Gemini へのファイル送信に失敗しました: ' + up.getContentText().slice(0, 200));
+  for (let i = 0; i < 30 && file.state === 'PROCESSING'; i++) {
+    Utilities.sleep(3000);
+    file = JSON.parse(UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/' + file.name, {
+      headers: { 'x-goog-api-key': key }, muteHttpExceptions: true,
+    }).getContentText());
+  }
+  if (file.state === 'FAILED') throw new Error('Gemini 側で PDF の処理に失敗しました');
+  return { uri: file.uri, mimeType: file.mimeType || mime, uploadedAt: Date.now() };
+}
+
+function pdfGeminiFile_(job, work) {
+  const src = readJson_(work, 'source.json') || {};
+  // Files API のファイルは 48 時間で消えるため 40 時間で再アップロード
+  if (!src.geminiFile || Date.now() - src.geminiFile.uploadedAt > 40 * 3600000) {
+    src.geminiFile = geminiUploadFile_(DriveApp.getFileById(job.sourceId).getBlob());
+    writeJson_(work, 'source.json', src);
+  }
+  return src.geminiFile;
+}
+
+function geminiExtractPdf_(file, from, to, speakers) {
+  const prompt = [
+    'あなたは漫画動画の台本起こし担当です。添付 PDF は漫画です（1 ページ = 動画の 1 シーン）。',
+    from + ' ページ目から ' + to + ' ページ目まで（1 始まり）について、ページごとにフキダシ内のセリフを読む順番どおりにすべて書き起こしてください。',
+    '登場人物の候補: ' + speakers.join('、') + '（該当しない場合は見た目から簡潔な名前を付ける。地の文は「ナレーション」）',
+    '擬音・効果音の文字はセリフに含めないでください。セリフのないページは lines を空配列にしてください。',
+    'style には日本語の短い演技指示（例: 明るく、驚いて、呆れて、小声で）を入れ、不要なら空文字にしてください。',
+    '出力は次の JSON のみ: {"pages":[{"page":1,"lines":[{"speaker":"","text":"","style":""}]}]}',
+  ].join('\n');
+  const res = geminiFetch_(prop_('GEMINI_TEXT_MODEL', 'gemini-3.8-flash'), {
+    contents: [{ role: 'user', parts: [
+      { text: prompt },
+      { file_data: { mime_type: file.mimeType, file_uri: file.uri } },
+    ] }],
+    generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
+  });
+  const text = geminiText_(res).replace(/```json|```/g, '').trim();
+  let obj;
+  try { obj = JSON.parse(text); } catch (e) { throw new Error('PDF のセリフ抽出結果を解析できませんでした'); }
+  const map = {};
+  (obj.pages || []).forEach(pg => {
+    map[Number(pg.page)] = (pg.lines || []).map(l => ({
+      speaker: String(l.speaker || 'ナレーション').trim(),
+      text: stripQuotes_(l.text),
+      style: String(l.style || '').trim(),
+    })).filter(l => l.text);
+  });
+  return map;
 }
 
 function exportSlideImage_(presId, pageId, folder, index) {
@@ -474,13 +642,45 @@ function stepExtract_(job, deadline) {
     script = {
       jobId: job.jobId,
       pages: pages.map(p => ({
-        index: p.index, imageFileId: p.imageFileId, notes: p.notes, extracted: false,
+        index: p.index, imageFileId: p.imageFileId, pdfPage: p.pdfPage || 0, notes: p.notes, extracted: false,
         lines: [], bgm: null, se: [], minSec: null, motion: null,
       })),
     };
   }
   const speakers = loadVoices_().map(v => v.speaker);
   let done = script.pages.filter(p => p.extracted).length;
+
+  // PDF は Gemini にファイルごと渡し、数ページずつまとめて抽出
+  if (job.sourceType === 'pdf') {
+    const file = pdfGeminiFile_(job, work);
+    const chunk = numProp_('PDF_CHUNK_PAGES', 8);
+    while (done < script.pages.length) {
+      if (Date.now() > deadline) {
+        writeJson_(work, 'script.json', script);
+        stepProgress_(job, done / script.pages.length, 'PDF からセリフ抽出中 ' + done + '/' + script.pages.length);
+        return false;
+      }
+      const targets = script.pages.filter(p => !p.extracted).slice(0, chunk);
+      const from = targets[0].pdfPage;
+      const to = targets[targets.length - 1].pdfPage;
+      const map = geminiExtractPdf_(file, from, to, speakers);
+      targets.forEach(pg => {
+        pg.lines = (map[pg.pdfPage] || []).map((l, n) => ({
+          id: 'p' + ('000' + (pg.index + 1)).slice(-3) + '_' + ('00' + (n + 1)).slice(-2),
+          speaker: normalizeSpeaker_(l.speaker, speakers), text: l.text, style: l.style,
+          audioFileId: '', duration: 0,
+        }));
+        pg.extracted = true;
+        done++;
+      });
+      writeJson_(work, 'script.json', script);
+      stepProgress_(job, done / script.pages.length, 'PDF からセリフ抽出中 ' + done + '/' + script.pages.length);
+      if (isCanceled_(job.jobId)) return true;
+    }
+    const totalPdf = script.pages.reduce((s, p) => s + p.lines.length, 0);
+    return advance_(job, 'TTS', 'セリフ ' + totalPdf + ' 件を抽出しました');
+  }
+
   for (const pg of script.pages) {
     if (pg.extracted) continue;
     if (Date.now() > deadline) {
@@ -682,7 +882,9 @@ function stepTimeline_(job) {
 
     return {
       index: pg.index,
-      image: { fileId: pg.imageFileId, name: ('000' + (pg.index + 1)).slice(-3) + '.png' },
+      image: job.sourceType === 'pdf'
+        ? { fileId: job.sourceId, name: 'source.pdf', pdfPage: pg.pdfPage }
+        : { fileId: pg.imageFileId, name: ('000' + (pg.index + 1)).slice(-3) + '.png' },
       duration: duration, motion: motion, lines: lines, se: se,
     };
   });

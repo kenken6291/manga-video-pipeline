@@ -147,11 +147,22 @@ tailwind.config = {
     <section>
       <h2 class="font-head text-2xl mb-4">新しい動画をつくる</h2>
       <form id="jobForm" class="bg-white rounded-2xl p-5 md:p-6 shadow-sm grid gap-4 md:grid-cols-6">
-        <label class="md:col-span-6 block">
-          <span class="text-sm font-bold">Google スライド（または画像フォルダ）の URL</span>
-          <input name="sourceUrl" required placeholder="https://docs.google.com/presentation/d/..." class="input">
-          <span class="text-xs text-inkSoft">運営アカウントに閲覧権限を共有してください。スピーカーノートにセリフがあればそれを優先し、なければ画像から読み取ります。</span>
-        </label>
+        <div class="md:col-span-6 grid gap-3 md:grid-cols-[1fr_auto_1fr] md:items-end">
+          <label class="block">
+            <span class="text-sm font-bold">Drive 上のファイルの URL</span>
+            <input name="sourceUrl" placeholder="Google スライド / PowerPoint / PDF / 画像フォルダ" class="input">
+          </label>
+          <span class="text-sm text-inkSoft md:pb-3 text-center">または</span>
+          <label class="block">
+            <span class="text-sm font-bold">パソコンからアップロード</span>
+            <input name="file" type="file" accept=".pptx,.ppt,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint"
+              class="input !py-2 file:mr-3 file:rounded-full file:border-0 file:bg-ink file:text-paper file:px-4 file:py-1.5 file:font-bold">
+          </label>
+          <span class="md:col-span-3 text-xs text-inkSoft leading-relaxed">
+            PowerPoint（.pptx / .ppt）は Google スライドに変換して処理し、スピーカーノートのセリフも使えます。PDF は各ページの絵からセリフを読み取ります。
+            URL で指定する場合は運営アカウントに閲覧権限を共有してください（アップロードは 25MB まで）。
+          </span>
+        </div>
         <label class="md:col-span-3 block">
           <span class="text-sm font-bold">タイトル（省略可）</span>
           <input name="title" maxlength="80" class="input">
@@ -432,14 +443,38 @@ function enterApp() {
 }
 
 /* ===== ジョブ ===== */
+const MAX_UPLOAD_MB = 25;
+
+function readAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(new Error('ファイルを読み込めませんでした'));
+    r.readAsDataURL(file);
+  });
+}
+
 $('#jobForm').addEventListener('submit', e => {
   e.preventDefault();
   const f = new FormData(e.target);
+  const file = f.get('file');
+  const hasFile = file && file.size > 0;
+  let sourceUrl = String(f.get('sourceUrl') || '').trim();
+  if (!hasFile && !sourceUrl) { $('#jobMsg').textContent = 'URL を入力するか、ファイルを選択してください'; return; }
   withBusy(e.submitter, async () => {
-    $('#jobMsg').textContent = 'スライドを確認しています…';
     try {
+      let title = f.get('title');
+      if (hasFile) {
+        if (!/\.(pptx?|pdf)$/i.test(file.name)) throw new Error('PowerPoint（.pptx / .ppt）または PDF を選択してください');
+        if (file.size > MAX_UPLOAD_MB * 1024 * 1024) throw new Error('ファイルサイズは ' + MAX_UPLOAD_MB + 'MB までです');
+        $('#jobMsg').textContent = 'アップロード中…（' + (file.size / 1048576).toFixed(1) + 'MB）';
+        const up = await api('jobs.upload', { name: file.name, data: await readAsBase64(file) });
+        sourceUrl = up.fileId;
+        if (!title) title = file.name.replace(/\.(pptx?|pdf)$/i, '');
+      }
+      $('#jobMsg').textContent = 'ファイルを確認しています…';
       await api('jobs.create', {
-        sourceUrl: f.get('sourceUrl'), title: f.get('title'),
+        sourceUrl, title,
         targetMinutes: f.get('targetMinutes'), motion: f.get('motion'),
       });
       e.target.reset();

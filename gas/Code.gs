@@ -77,7 +77,7 @@ function setup() {
     PROPS.setProperty('ROOT_FOLDER_ID', rootId);
   }
   const root = DriveApp.getFolderById(rootId);
-  ['bgm', 'se', 'jobs', 'outputs'].forEach(n => subFolder_(root, n));
+  ['bgm', 'se', 'jobs', 'outputs', 'uploads'].forEach(n => subFolder_(root, n));
 
   if (!prop_('WEBHOOK_API_KEY', '')) PROPS.setProperty('WEBHOOK_API_KEY', randomToken_(32));
   if (!prop_('RENDERER_KEY', '')) PROPS.setProperty('RENDERER_KEY', randomToken_(32));
@@ -121,6 +121,7 @@ function diagnose() {
     return 'Code.gs / Auth.gs / Jobs.gs';
   });
   check('Slides 拡張サービス', () => typeof Slides !== 'undefined' ? '有効' : (() => { throw new Error('無効（サービス「+」から Google Slides API を追加）'); })());
+  check('Drive 拡張サービス', () => typeof Drive !== 'undefined' ? '有効（PowerPoint 変換に使用）' : (() => { throw new Error('無効（サービス「+」から Drive API を追加）'); })());
   check('Web アプリ URL', () => ScriptApp.getService().getUrl() || '未デプロイ');
   check('API 応答テスト', () => JSON.stringify(dispatch_({ action: 'auth.me' })));
   Logger.log(out.join('\n'));
@@ -155,6 +156,7 @@ function routes_() {
     'auth.changePassword': a_changePassword_,
     'auth.resetPassword': a_resetPassword_,
     'jobs.create': j_create_,
+    'jobs.upload': j_upload_,
     'jobs.list': j_list_,
     'jobs.get': j_get_,
     'jobs.retry': j_retry_,
